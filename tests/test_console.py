@@ -67,6 +67,7 @@ class ConsoleCase(unittest.TestCase):
                 "quota",
                 "audit",
                 "schedule",
+                "dispatch",
             },
         )
 
@@ -371,6 +372,74 @@ class ConsoleCase(unittest.TestCase):
         self.assertEqual(body["threshold"], -25.0)
         _, body = self.call("GET", "/schedule")
         self.assertEqual(body["due"], ["r2", "r1"])
+
+    def test_dispatch_routes(self) -> None:
+        self.add_room("r1", 1, -10.0)
+        self.add_room("r2", 2, -8.0)
+        self.call("POST", "/comp/add", {"id": "c1", "stages": 8})
+        self.call("POST", "/comp/add", {"id": "c2", "stages": 4})
+        self.call("POST", "/room/assign", {"id": "r1", "compressor": "c1"})
+        self.call("POST", "/room/assign", {"id": "r2", "compressor": "c2"})
+
+        status, body = self.call("GET", "/dispatch")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["policy"], "max-first")
+        self.assertEqual(body["order_mode"], "room-priority")
+        self.assertEqual(body["pending"], 0)
+        self.assertIsNone(body["latest"])
+
+        status, body = self.call("POST", "/dispatch/request", {"room": "r1", "priority": 5})
+        self.assertEqual(body["queued"], "r1")
+        self.assertEqual(body["pending"], 1)
+        status, body = self.call("POST", "/dispatch/request", {"room": "r2"})
+        self.assertEqual(body["priority"], 0)
+        status, body = self.call("POST", "/dispatch/request", {"room": "ghost"})
+        self.assertEqual(status, 400)
+        self.assertIn("not found", body["error"])
+
+        status, body = self.call("GET", "/dispatch/plan")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["order"], ["c1", "c2"])
+        self.assertEqual(body["entries"][0]["compressor"], "c1")
+        self.assertTrue(body["entries"][1]["legacy"])
+        self.assertEqual(body["granted"], 2)
+
+        status, body = self.call("POST", "/dispatch/run")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["version"], 1)
+        self.assertEqual(body["admitted"], ["r1", "r2"])
+        self.assertEqual(body["granted"], 2)
+        self.assertEqual(body["entries"][0]["to_stage"], 2)
+        self.assertIn("budget cap", body["entries"][0]["reason"])
+        self.assertIn("budget exhausted", body["entries"][1]["reason"])
+
+        status, body = self.call("GET", "/comp")
+        self.assertEqual(body["total_stage"], 2)
+
+        status, body = self.call("GET", "/dispatch/batches")
+        self.assertEqual(body["count"], 1)
+        self.assertEqual(body["batches"][0]["version"], 1)
+        status, body = self.call("GET", "/dispatch/versions")
+        self.assertEqual(body["versions"], [{"version": 1, "at": body["versions"][0]["at"], "granted": 2, "entries": 2}])
+        status, body = self.call("GET", "/dispatch")
+        self.assertEqual(body["last_version"], 1)
+        self.assertEqual(body["latest"]["version"], 1)
+
+        status, body = self.call("POST", "/dispatch/config", {"max_step": 6, "rate_limit": 10})
+        self.assertEqual(body["config"]["max_step"], 6)
+        self.assertEqual(body["config"]["rate_limit"], 10)
+        status, body = self.call("POST", "/dispatch/config", {"max_step": 0})
+        self.assertEqual(status, 400)
+        status, body = self.call("POST", "/dispatch/policy", {"policy": "average-share"})
+        self.assertEqual(body["policy"], "average-share")
+        status, body = self.call("POST", "/dispatch/policy", {"policy": "random"})
+        self.assertEqual(status, 400)
+        status, body = self.call("POST", "/dispatch/order", {"mode": "efficiency"})
+        self.assertEqual(body["order_mode"], "efficiency")
+        status, body = self.call("POST", "/dispatch/efficiency", {"id": "c2", "efficiency": 2.5})
+        self.assertEqual(body["efficiency"], 2.5)
+        status, body = self.call("POST", "/dispatch/efficiency", {"id": "ghost", "efficiency": 1.0})
+        self.assertEqual(status, 400)
 
     def test_cycle_simulation_and_exports(self) -> None:
         self.add_room("r1", 1, -5.0)

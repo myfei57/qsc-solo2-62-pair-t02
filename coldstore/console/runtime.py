@@ -6,6 +6,7 @@ from coldstore.ammonia import Monitor
 from coldstore.audit import Auditor
 from coldstore.comp import Bank
 from coldstore.defrost import Controller
+from coldstore.dispatch import Dispatcher
 from coldstore.evap import Condenser
 from coldstore.fan import FanSet
 from coldstore.interlock import Interlock
@@ -40,3 +41,4 @@ class Runtime:
         self.accumulator = Accumulator(store)
         self.auditor = Auditor(store)
         self.scheduler = Scheduler(store)
+        self.dispatcher = Dispatcher(store)

@@ -37,6 +37,8 @@ class Telemetry:
     quota_value: float
     audit_entries: int
     schedule_due: int
+    dispatch_pending: int
+    dispatch_batches: int
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -66,6 +68,8 @@ class Telemetry:
             "quota_value": self.quota_value,
             "audit_entries": self.audit_entries,
             "schedule_due": self.schedule_due,
+            "dispatch_pending": self.dispatch_pending,
+            "dispatch_batches": self.dispatch_batches,
         }
 
 
@@ -101,4 +105,6 @@ def collect(rt: Runtime) -> Telemetry:
         quota_value=rt.accumulator.value(),
         audit_entries=rt.auditor.count(),
         schedule_due=len(rt.scheduler.due(rt.rooms)),
+        dispatch_pending=rt.dispatcher.pending(),
+        dispatch_batches=rt.dispatcher.batch_count(),
     )

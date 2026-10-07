@@ -6,6 +6,15 @@ from typing import TYPE_CHECKING
 
 from coldstore.ammonia import validate_ppm, validate_threshold
 from coldstore.comp import validate_stage
+from coldstore.dispatch import (
+    validate_efficiency,
+    validate_max_step,
+    validate_order_mode,
+    validate_policy,
+    validate_rate_limit,
+    validate_rate_window,
+    validate_stage_capacity,
+)
 from coldstore.evap import validate_baseline
 from coldstore.fan import PRIMARY, STANDBY
 from coldstore.load import validate_baseline as validate_load_baseline
@@ -663,6 +672,89 @@ def schedule_plan(server: "Server", request: Request) -> Response:
     return json_response(
         {"entries": [entry.as_dict() for entry in scheduler.plan(rooms)], "due": scheduler.due(rooms)}
     )
+
+
+def dispatch_state(server: "Server", request: Request) -> Response:
+    dispatcher = server.runtime.dispatcher
+    payload = dispatcher.state().as_dict()
+    payload["latest"] = dispatcher.latest()
+    return json_response(payload)
+
+
+def dispatch_request(server: "Server", request: Request) -> Response:
+    room_id = request.str_field("room")
+    if not room_id:
+        raise ValueError("room is required")
+    if server.runtime.rooms.room(room_id) is None:
+        raise ValueError(f"cold room {room_id} not found")
+    dispatcher = server.runtime.dispatcher
+    queued = dispatcher.submit(room_id, request.int_field("priority", 0))
+    return json_response(
+        {"queued": queued.room_id, "priority": queued.priority, "pending": dispatcher.pending()}
+    )
+
+
+def dispatch_run(server: "Server", request: Request) -> Response:
+    runtime = server.runtime
+    record = runtime.dispatcher.run(runtime.rooms, runtime.compressors, runtime.load)
+    return json_response(record.as_dict())
+
+
+def dispatch_plan(server: "Server", request: Request) -> Response:
+    runtime = server.runtime
+    plan = runtime.dispatcher.plan(runtime.rooms, runtime.compressors, runtime.load)
+    return json_response(plan.as_dict())
+
+
+def dispatch_batches(server: "Server", request: Request) -> Response:
+    dispatcher = server.runtime.dispatcher
+    return json_response({"batches": dispatcher.batches(), "count": dispatcher.batch_count()})
+
+
+def dispatch_versions(server: "Server", request: Request) -> Response:
+    return json_response({"versions": server.runtime.dispatcher.versions()})
+
+
+def dispatch_config(server: "Server", request: Request) -> Response:
+    dispatcher = server.runtime.dispatcher
+    if "max_step" in request.payload:
+        value = request.int_field("max_step")
+        validate_max_step(value)
+        dispatcher.set_max_step(value)
+    if "rate_limit" in request.payload:
+        value = request.int_field("rate_limit")
+        validate_rate_limit(value)
+        dispatcher.set_rate_limit(value)
+    if "rate_window" in request.payload:
+        value = request.float_field("rate_window")
+        validate_rate_window(value)
+        dispatcher.set_rate_window(value)
+    if "stage_capacity" in request.payload:
+        value = request.float_field("stage_capacity")
+        validate_stage_capacity(value)
+        dispatcher.set_stage_capacity(value)
+    return json_response({"config": dispatcher.config()})
+
+
+def dispatch_policy(server: "Server", request: Request) -> Response:
+    policy = request.str_field("policy")
+    validate_policy(policy)
+    return json_response({"policy": server.runtime.dispatcher.set_policy(policy)})
+
+
+def dispatch_order(server: "Server", request: Request) -> Response:
+    mode = request.str_field("mode")
+    validate_order_mode(mode)
+    return json_response({"order_mode": server.runtime.dispatcher.set_order_mode(mode)})
+
+
+def dispatch_efficiency(server: "Server", request: Request) -> Response:
+    comp_id = request.str_field("id")
+    if server.runtime.compressors.compressor(comp_id) is None:
+        raise ValueError(f"compressor {comp_id} not found")
+    value = request.float_field("efficiency")
+    validate_efficiency(value)
+    return json_response({"id": comp_id, "efficiency": server.runtime.dispatcher.set_efficiency(comp_id, value)})
 
 
 def export_audit(server: "Server", request: Request) -> Response:

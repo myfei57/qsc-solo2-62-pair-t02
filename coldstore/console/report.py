@@ -32,6 +32,7 @@ def text_report(rt: Runtime) -> str:
         f"load: {describe['load']}",
         f"quota: {describe['quota']}",
         f"audit: {describe['audit']}",
+        f"dispatch: {describe['dispatch']}",
         f"audit kinds={rt.auditor.kinds()}",
         (
             f"compressors running={telemetry.compressors_running} "

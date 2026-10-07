@@ -11,6 +11,22 @@ from coldstore.audit import Auditor
 from coldstore.comp import Bank as CompressorBank
 from coldstore.comp import validate_stage
 from coldstore.defrost import Controller as DefrostController
+from coldstore.dispatch import (
+    ORDER_EFFICIENCY,
+    ORDER_ROOM_PRIORITY,
+    POLICY_AVERAGE_SHARE,
+    POLICY_MAX_FIRST,
+    Dispatcher,
+    RateLimiter,
+    RequestQueue,
+    encode_stage,
+    is_legacy,
+    target_for,
+    validate_max_step,
+    validate_order_mode,
+    validate_policy,
+    validate_stage_capacity,
+)
 from coldstore.evap import Condenser, validate_baseline as validate_evap_baseline
 from coldstore.fan import PRIMARY, STANDBY, FanSet
 from coldstore.interlock import Interlock
@@ -572,6 +588,209 @@ class SchedulerCase(unittest.TestCase):
             validate_threshold(-200.0)
         with self.assertRaises(ValueError):
             validate_threshold(200.0)
+
+
+class DispatchCase(unittest.TestCase):
+    def _rig(self, tmp: str):
+        store = Store.open(f"{tmp}/state.json")
+        rooms = RoomRegistry()
+        bank = CompressorBank()
+        load = LoadCalculator(store)
+        dispatcher = Dispatcher(store)
+        return store, rooms, bank, load, dispatcher
+
+    def test_queue_pops_by_priority_then_fifo(self) -> None:
+        queue = RequestQueue()
+        queue.push("r1", priority=1)
+        queue.push("r2", priority=5)
+        queue.push("r3", priority=5)
+        self.assertEqual(queue.pending(), 3)
+        self.assertEqual(queue.pop().room_id, "r2")
+        self.assertEqual(queue.pop().room_id, "r3")
+        self.assertEqual([request.room_id for request in queue.peek(5)], ["r1"])
+        queue.clear()
+        self.assertEqual(queue.pending(), 0)
+        self.assertIsNone(queue.pop())
+
+    def test_rate_limiter_sliding_window(self) -> None:
+        limiter = RateLimiter(limit=2, window=10.0)
+        self.assertEqual(limiter.available(0.0), 2)
+        limiter.record(1.0, 2)
+        self.assertEqual(limiter.available(2.0), 0)
+        self.assertEqual(limiter.available(11.1), 2)
+        limiter.configure(3, 10.0)
+        self.assertEqual(limiter.available(11.1), 3)
+
+    def test_target_stages_and_legacy_encoding(self) -> None:
+        self.assertEqual(target_for(12.0, 3.0, 8), 4)
+        self.assertEqual(target_for(12.1, 3.0, 8), 5)
+        self.assertEqual(target_for(0.0, 3.0, 8), 0)
+        self.assertEqual(target_for(30.0, 3.0, 4), 4)
+        self.assertTrue(is_legacy(4))
+        self.assertFalse(is_legacy(8))
+        self.assertEqual(encode_stage(4, 9), 4)
+        self.assertEqual(encode_stage(8, 6), 6)
+        self.assertEqual(encode_stage(8, -1), 0)
+
+    def test_run_applies_budget_and_records_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store, rooms, bank, load, dispatcher = self._rig(tmp)
+            rooms.add_room("r1", 1, -10.0)
+            rooms.add_room("r2", 2, -8.0)
+            bank.add_compressor("c1", 8)
+            bank.add_compressor("c2", 4)
+            rooms.assign_compressor("r1", "c1")
+            rooms.assign_compressor("r2", "c2")
+            dispatcher.set_max_step(3)
+
+            dispatcher.submit("r1", priority=5)
+            dispatcher.submit("r2", priority=1)
+            plan = dispatcher.plan(rooms, bank, load, now=0.0)
+            self.assertEqual(plan.order, ["c1", "c2"])
+            self.assertEqual(plan.entries[0].target, 4)
+            self.assertEqual(plan.entries[0].granted, 3)
+            self.assertEqual(plan.entries[1].granted, 0)
+            self.assertEqual(bank.total_stage(), 0)
+
+            record = dispatcher.run(rooms, bank, load, now=0.0)
+            self.assertEqual(record.version, 1)
+            self.assertEqual(record.admitted, ["r1", "r2"])
+            self.assertEqual(record.granted, 3)
+            self.assertEqual(bank.stage("c1"), (3, True))
+            self.assertEqual(bank.stage("c2"), (0, True))
+            entry = record.entries[1]
+            self.assertTrue(entry.legacy)
+            self.assertEqual(entry.encoded, 0)
+            self.assertIn("legacy 4-stage encoding", entry.reason)
+            self.assertIn("budget exhausted", entry.reason)
+
+            self.assertEqual(dispatcher.pending(), 0)
+            self.assertEqual(dispatcher.batch_count(), 1)
+            self.assertEqual(dispatcher.versions()[0]["version"], 1)
+            self.assertEqual(dispatcher.latest()["version"], 1)
+            self.assertEqual(dispatcher.batches()[0]["order"], ["c1", "c2"])
+            state = dispatcher.state()
+            self.assertEqual(state.last_version, 1)
+            self.assertIn("dispatch pending=0", dispatcher.describe())
+
+    def test_average_share_splits_the_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store, rooms, bank, load, dispatcher = self._rig(tmp)
+            rooms.add_room("r1", 1, -10.0)
+            rooms.add_room("r2", 2, -10.0)
+            bank.add_compressor("c1", 8)
+            bank.add_compressor("c2", 8)
+            rooms.assign_compressor("r1", "c1")
+            rooms.assign_compressor("r2", "c2")
+            dispatcher.set_max_step(4)
+
+            dispatcher.set_policy(POLICY_MAX_FIRST)
+            dispatcher.submit("r1", priority=5)
+            dispatcher.submit("r2", priority=1)
+            record = dispatcher.run(rooms, bank, load, now=0.0)
+            self.assertEqual([entry.granted for entry in record.entries], [4, 0])
+
+            bank.stop("c1")
+            bank.stop("c2")
+            dispatcher.set_policy(POLICY_AVERAGE_SHARE)
+            dispatcher.submit("r1", priority=5)
+            dispatcher.submit("r2", priority=1)
+            record = dispatcher.run(rooms, bank, load, now=10.0)
+            self.assertEqual([entry.granted for entry in record.entries], [2, 2])
+            self.assertEqual(record.version, 2)
+
+    def test_order_modes_and_efficiency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store, rooms, bank, load, dispatcher = self._rig(tmp)
+            rooms.add_room("r1", 1, -10.0)
+            rooms.add_room("r2", 2, -10.0)
+            bank.add_compressor("c1", 8)
+            bank.add_compressor("c2", 8)
+            rooms.assign_compressor("r1", "c1")
+            rooms.assign_compressor("r2", "c2")
+            dispatcher.set_efficiency("c2", 2.0)
+
+            dispatcher.set_order_mode(ORDER_ROOM_PRIORITY)
+            dispatcher.submit("r1", priority=9)
+            dispatcher.submit("r2", priority=1)
+            plan = dispatcher.plan(rooms, bank, load, now=0.0)
+            self.assertEqual(plan.order, ["c1", "c2"])
+
+            dispatcher.set_order_mode(ORDER_EFFICIENCY)
+            plan = dispatcher.plan(rooms, bank, load, now=0.0)
+            self.assertEqual(plan.order, ["c2", "c1"])
+
+    def test_rate_limit_defers_overflow_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store, rooms, bank, load, dispatcher = self._rig(tmp)
+            for index in range(3):
+                rooms.add_room(f"r{index}", index + 1, -10.0)
+                bank.add_compressor(f"c{index}", 8)
+                rooms.assign_compressor(f"r{index}", f"c{index}")
+            dispatcher.set_rate_limit(2)
+            dispatcher.set_rate_window(10.0)
+            for index in range(3):
+                dispatcher.submit(f"r{index}")
+
+            record = dispatcher.run(rooms, bank, load, now=0.0)
+            self.assertEqual(len(record.admitted), 2)
+            self.assertEqual(dispatcher.pending(), 1)
+            record = dispatcher.run(rooms, bank, load, now=5.0)
+            self.assertEqual(record.admitted, [])
+            record = dispatcher.run(rooms, bank, load, now=11.0)
+            self.assertEqual(len(record.admitted), 1)
+
+    def test_deferred_requests_carry_reasons(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store, rooms, bank, load, dispatcher = self._rig(tmp)
+            rooms.add_room("cold", 1, -30.0)
+            rooms.add_room("loose", 2, -10.0)
+            bank.add_compressor("c1", 8)
+            rooms.assign_compressor("cold", "c1")
+            dispatcher.submit("ghost")
+            dispatcher.submit("loose")
+            dispatcher.submit("cold")
+            record = dispatcher.run(rooms, bank, load, now=0.0)
+            reasons = {deferred.room_id: deferred.reason for deferred in record.deferred}
+            self.assertEqual(reasons["ghost"], "unknown room")
+            self.assertEqual(reasons["loose"], "no compressor assigned")
+            self.assertEqual(reasons["cold"], "no load")
+            self.assertEqual(record.entries, [])
+
+    def test_shared_compressor_merges_demands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store, rooms, bank, load, dispatcher = self._rig(tmp)
+            rooms.add_room("r1", 1, -10.0)
+            rooms.add_room("r2", 2, -14.0)
+            bank.add_compressor("c1", 8)
+            rooms.assign_compressor("r1", "c1")
+            rooms.assign_compressor("r2", "c1")
+            dispatcher.set_max_step(8)
+            dispatcher.submit("r1", priority=1)
+            dispatcher.submit("r2", priority=2)
+            record = dispatcher.run(rooms, bank, load, now=0.0)
+            self.assertEqual(len(record.entries), 1)
+            entry = record.entries[0]
+            self.assertEqual(entry.rooms, ["r1", "r2"])
+            self.assertEqual(entry.target, 4)
+            self.assertIn("shared by r1,r2", entry.reason)
+            self.assertEqual(bank.stage("c1"), (4, True))
+
+    def test_dispatch_validation(self) -> None:
+        validate_policy(POLICY_MAX_FIRST)
+        validate_policy(POLICY_AVERAGE_SHARE)
+        with self.assertRaises(ValueError):
+            validate_policy("random")
+        validate_order_mode(ORDER_ROOM_PRIORITY)
+        validate_order_mode(ORDER_EFFICIENCY)
+        with self.assertRaises(ValueError):
+            validate_order_mode("fastest")
+        validate_max_step(1)
+        with self.assertRaises(ValueError):
+            validate_max_step(0)
+        validate_stage_capacity(1.0)
+        with self.assertRaises(ValueError):
+            validate_stage_capacity(0.0)
 
 
 class ReportingCase(unittest.TestCase):

@@ -4,6 +4,23 @@ from __future__ import annotations
 
 from coldstore.ammonia import Monitor
 from coldstore.ammonia.monitor import THRESHOLD_KEY as AMMONIA_THRESHOLD_KEY
+from coldstore.dispatch import (
+    DEFAULT_MAX_STEP,
+    DEFAULT_ORDER,
+    DEFAULT_POLICY,
+    DEFAULT_RATE_LIMIT,
+    DEFAULT_RATE_WINDOW,
+    DEFAULT_STAGE_CAPACITY,
+    Dispatcher,
+)
+from coldstore.dispatch.planner import (
+    CAPACITY_KEY,
+    MAX_STEP_KEY,
+    ORDER_KEY,
+    POLICY_KEY,
+    RATE_LIMIT_KEY,
+    RATE_WINDOW_KEY,
+)
 from coldstore.evap import Condenser
 from coldstore.evap.condenser import BASELINE_KEY as EVAP_BASELINE_KEY
 from coldstore.evap.condenser import DEFAULT_BASELINE as EVAP_BASELINE
@@ -51,5 +68,19 @@ def seed_defaults(store: Store) -> None:
     scheduler = Scheduler(store)
     if not has_key(store, SCHEDULE_THRESHOLD_KEY):
         scheduler.set_threshold(SCHEDULE_THRESHOLD)
+
+    dispatcher = Dispatcher(store)
+    if not has_key(store, CAPACITY_KEY):
+        dispatcher.set_stage_capacity(DEFAULT_STAGE_CAPACITY)
+    if not has_key(store, MAX_STEP_KEY):
+        dispatcher.set_max_step(DEFAULT_MAX_STEP)
+    if not has_key(store, RATE_LIMIT_KEY):
+        dispatcher.set_rate_limit(DEFAULT_RATE_LIMIT)
+    if not has_key(store, RATE_WINDOW_KEY):
+        dispatcher.set_rate_window(DEFAULT_RATE_WINDOW)
+    if not has_key(store, POLICY_KEY):
+        dispatcher.set_policy(DEFAULT_POLICY)
+    if not has_key(store, ORDER_KEY):
+        dispatcher.set_order_mode(DEFAULT_ORDER)
 
     append_event(store, EVENT_KEY, "seed", "defaults")
