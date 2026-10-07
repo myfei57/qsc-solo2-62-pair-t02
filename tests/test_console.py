@@ -67,6 +67,8 @@ class ConsoleCase(unittest.TestCase):
                 "quota",
                 "audit",
                 "schedule",
+                "staging",
+                "staging_gate",
             },
         )
 
@@ -449,6 +451,90 @@ class ConsoleCase(unittest.TestCase):
         status, error = self.call("POST", "/room/add", {"id": "r1", "zone": -1})
         self.assertEqual(status, 400)
         self.assertIn("non-negative", error["error"])
+
+    def _seed_staging(self) -> None:
+        self.add_room("r1", 1, -5.0)
+        self.add_room("r2", 2, -10.0)
+        self.call("POST", "/comp/add", {"id": "c1", "stages": 4})
+        self.call("POST", "/comp/add", {"id": "c2", "stages": 8})
+        self.call("POST", "/room/assign", {"id": "r1", "compressor": "c1"})
+        self.call("POST", "/room/assign", {"id": "r2", "compressor": "c2"})
+
+    def test_staging_monitor_plan_and_publish(self) -> None:
+        self._seed_staging()
+        status, body = self.call("GET", "/staging")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["policy"], "max_cooling")
+        self.assertEqual(body["plan"]["target_stages"], 8)
+        self.assertEqual(body["batch_count"], 0)
+
+        status, body = self.call("POST", "/staging/publish", {"reason": "dry-run"})
+        self.assertEqual(status, 200)
+        self.assertFalse(body["batch"]["applied"])
+        status, body = self.call("GET", "/staging/versions")
+        self.assertEqual(body["count"], 1)
+
+        status, body = self.call("GET", "/staging/machines")
+        self.assertEqual(body["order"], ["c1", "c2"])
+
+    def test_staging_apply_budget_policies_and_caps(self) -> None:
+        self._seed_staging()
+        status, body = self.call("POST", "/staging/cap", {"comp": 2})
+        self.assertEqual(body["cap_comp"], 2)
+        status, body = self.call("POST", "/staging/apply", {"budget": 3})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["batch"]["used"], 3)
+        grants = {a["comp_id"]: a["granted"] for a in body["batch"]["plan"]["allocations"]}
+        self.assertEqual(grants["c1"], 2)  # per machine cap
+        self.assertEqual(grants["c2"], 1)
+
+        status, body = self.call("POST", "/staging/policy", {"policy": "mean_queue"})
+        self.assertEqual(body["policy"], "mean_queue")
+        status, error = self.call("POST", "/staging/policy", {"policy": "other"})
+        self.assertEqual(status, 400)
+        self.assertIn("max_cooling", error["error"])
+
+        status, body = self.call("POST", "/staging/order", {"policy": "comp_efficiency"})
+        self.assertEqual(body["order_policy"], "comp_efficiency")
+
+    def test_staging_queue_throttle_and_history(self) -> None:
+        self._seed_staging()
+        self.call("POST", "/staging/throttle", {"rate": 1.0, "burst": 1})
+        self.call("POST", "/staging/request", {"room": "r2", "priority": 1})
+        self.call("POST", "/staging/request", {"room": "r1", "priority": 9})
+        status, body = self.call("GET", "/staging/queue")
+        self.assertEqual(body["depth"], 2)
+        self.assertEqual(body["pending"][0]["room_id"], "r2")
+
+        status, body = self.call("POST", "/staging/admit", {"limit": 5})
+        self.assertEqual(status, 200)
+        self.assertEqual([t["room"] for t in body["admitted"]], ["r2"])
+
+        status, body = self.call("POST", "/staging/admit", {"limit": 5})
+        self.assertEqual(status, 202)
+        self.assertFalse(body["applied"])
+
+        self.call("POST", "/staging/tokens", {"tokens": 1})
+        status, body = self.call("POST", "/staging/admit", {"limit": 5})
+        self.assertEqual(status, 200)
+        self.assertEqual([t["room"] for t in body["admitted"]], ["r1"])
+
+        status, body = self.call("GET", "/staging/batches")
+        self.assertGreaterEqual(body["count"], 2)
+        seq = body["batches"][-1]["seq"]
+        status, body = self.call("POST", "/staging/batch", {"seq": seq})
+        self.assertEqual(body["batch"]["seq"], seq)
+        status, body = self.call("POST", "/staging/version", {"version": seq})
+        self.assertEqual(body["version"], seq)
+        self.assertIn("machine_order", body)
+        status, body = self.call("POST", "/staging/batch", {"seq": 999})
+        self.assertEqual(status, 404)
+
+    def test_staging_request_validation(self) -> None:
+        status, error = self.call("POST", "/staging/request", {})
+        self.assertEqual(status, 400)
+        status, error = self.call("POST", "/staging/request", {"room": "ghost"})
+        self.assertEqual(status, 400)
 
 
 class WsgiCase(unittest.TestCase):

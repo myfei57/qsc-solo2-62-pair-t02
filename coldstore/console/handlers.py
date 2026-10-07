@@ -22,6 +22,7 @@ from . import checks, history, ops
 from . import describe as describe_module
 from . import simulate as simulate_module
 from . import snapshot as snapshot_module
+from . import staging as staging_module
 from . import telemetry as telemetry_module
 from .cycle import run_cycle
 from .http import Request, Response, csv_response, json_response, text_response
@@ -663,6 +664,90 @@ def schedule_plan(server: "Server", request: Request) -> Response:
     return json_response(
         {"entries": [entry.as_dict() for entry in scheduler.plan(rooms)], "due": scheduler.due(rooms)}
     )
+
+
+def staging_state(server: "Server", request: Request) -> Response:
+    return staging_module.staging_state(server.runtime, request)
+
+
+def staging_plan(server: "Server", request: Request) -> Response:
+    return staging_module.staging_plan(server.runtime, request)
+
+
+def staging_publish(server: "Server", request: Request) -> Response:
+    return staging_module.staging_publish(server.runtime, request)
+
+
+def staging_apply(server: "Server", request: Request) -> Response:
+    return staging_module.staging_apply(server.runtime, request)
+
+
+def staging_request(server: "Server", request: Request) -> Response:
+    return staging_module.staging_request(server.runtime, request)
+
+
+def staging_queue(server: "Server", request: Request) -> Response:
+    return staging_module.staging_queue(server.runtime, request)
+
+
+def staging_admit(server: "Server", request: Request) -> Response:
+    return staging_module.staging_admit(server.runtime, request)
+
+
+def staging_queue_clear(server: "Server", request: Request) -> Response:
+    return staging_module.staging_queue_clear(server.runtime, request)
+
+
+def staging_tokens(server: "Server", request: Request) -> Response:
+    return staging_module.staging_tokens(server.runtime, request)
+
+
+def staging_machines(server: "Server", request: Request) -> Response:
+    return staging_module.staging_machines(server.runtime, request)
+
+
+def staging_policy(server: "Server", request: Request) -> Response:
+    return staging_module.staging_set_policy(server.runtime, request)
+
+
+def staging_order(server: "Server", request: Request) -> Response:
+    return staging_module.staging_set_order(server.runtime, request)
+
+
+def staging_per_stage(server: "Server", request: Request) -> Response:
+    return staging_module.staging_per_stage(server.runtime, request)
+
+
+def staging_cap(server: "Server", request: Request) -> Response:
+    return staging_module.staging_cap(server.runtime, request)
+
+
+def staging_throttle(server: "Server", request: Request) -> Response:
+    return staging_module.staging_throttle(server.runtime, request)
+
+
+def staging_efficiency(server: "Server", request: Request) -> Response:
+    return staging_module.staging_efficiency(server.runtime, request)
+
+
+def staging_priority(server: "Server", request: Request) -> Response:
+    return staging_module.staging_priority(server.runtime, request)
+
+
+def staging_batches(server: "Server", request: Request) -> Response:
+    return staging_module.staging_batches(server.runtime, request)
+
+
+def staging_batch(server: "Server", request: Request) -> Response:
+    return staging_module.staging_batch(server.runtime, request)
+
+
+def staging_versions(server: "Server", request: Request) -> Response:
+    return staging_module.staging_versions(server.runtime, request)
+
+
+def staging_version(server: "Server", request: Request) -> Response:
+    return staging_module.staging_version(server.runtime, request)
 
 
 def export_audit(server: "Server", request: Request) -> Response:

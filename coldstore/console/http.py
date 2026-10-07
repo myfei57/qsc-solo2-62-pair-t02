@@ -12,9 +12,11 @@ if TYPE_CHECKING:  # pragma: no cover - imported only for type checkers
 
 STATUS_TEXT = {
     200: "OK",
+    202: "Accepted",
     400: "Bad Request",
     404: "Not Found",
     405: "Method Not Allowed",
+    429: "Too Many Requests",
     500: "Internal Server Error",
 }
 

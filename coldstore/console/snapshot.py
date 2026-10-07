@@ -27,4 +27,6 @@ def collect(rt: Runtime) -> dict[str, object]:
         "quota": rt.accumulator.state().as_dict(),
         "audit": rt.auditor.state().as_dict(),
         "schedule": rt.scheduler.state(rt.rooms).as_dict(),
+        "staging": rt.staging.plan().as_dict(),
+        "staging_gate": rt.staging.gate.state().as_dict(),
     }
